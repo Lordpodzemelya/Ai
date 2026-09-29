@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>DWG → PDF</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/svg2pdf.js/2.2.4/svg2pdf.umd.min.js"></script>
+<style>
+:root{--bg:#eef1ee;--ink:#17232f;--mut:#5d6b76;--line:#c5cec9;--acc:#0b6b8a;--card:#fafbf9;--ok:#1d7a46;--err:#b3261e}
+@media(prefers-color-scheme:dark){:root{--bg:#12191f;--ink:#e3e9ec;--mut:#8d9ba5;--line:#2c3944;--acc:#4fb3d3;--card:#182129;--ok:#5cc58a;--err:#f08a82}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Segoe UI",system-ui,sans-serif}
+main{max-width:660px;margin:0 auto;padding:28px 18px}
+h1{font-size:28px;line-height:1.2;margin:0 0 4px}p.s{color:var(--mut);margin:0 0 22px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:18px}
+label{display:block;font-weight:600;margin:14px 0 4px}
+input[type=text],select{width:100%;padding:10px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--ink);font:inherit}
+.pk{display:flex;gap:10px;align-items:center}.pk span{flex:1;padding:10px;border:1px dashed var(--line);border-radius:4px;color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+button{padding:10px 14px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--ink);font:inherit;cursor:pointer}
+button.go{margin-top:18px;width:100%;padding:12px;border:0;background:var(--acc);color:#fff;font-weight:600}
+@media(prefers-color-scheme:dark){button.go{color:#0b1216}}
+button:disabled{opacity:.5;cursor:default}:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+.row{display:flex;gap:12px}.row>div{flex:1}.chk{display:flex;gap:8px;align-items:center;font-weight:400;margin:12px 0 0}
+details{margin-top:14px;color:var(--mut)}summary{cursor:pointer}
+.bar{height:8px;background:var(--line);border-radius:4px;margin-top:18px;overflow:hidden}.bar i{display:block;height:100%;width:0;background:var(--acc);transition:width .2s}
+#st{margin-top:8px;color:var(--mut);font-size:14px}
+#log{margin-top:12px;max-height:260px;overflow:auto;font:13px/1.5 Consolas,monospace;white-space:pre-wrap;border-top:1px solid var(--line);padding-top:10px}
+.ok{color:var(--ok)}.er{color:var(--err)}
+</style></head><body><main>
+<h1>DWG → PDF</h1>
+<p class="s">Все чертежи из папки — в PDF, прямо в браузере. Файлы никуда не загружаются.</p>
+<div class="card">
+<label>Папка с DWG</label><div class="pk"><span id="srcn">не выбрана</span><button id="bs">Выбрать…</button></div>
+<label>Папка для PDF</label><div class="pk"><span id="dstn">по умолчанию: подпапка pdf</span><button id="bd">Выбрать…</button></div>
+<div class="row">
+<div><label for="mode">Режим PDF</label><select id="mode"><option value="raster" selected>Растр (китайский текст ок)</option><option value="vector">Вектор (без CJK-текста)</option></select></div>
+<div><label for="size">Длинная сторона</label><select id="size"><option>A4</option><option selected>A3</option><option>A2</option><option>A1</option><option>A0</option></select></div>
+</div>
+<label class="chk"><input id="rec" type="checkbox" checked> Включая вложенные папки</label>
+<label class="chk"><input id="mono" type="checkbox" checked> Всё чёрным по белому</label>
+<details><summary>Адреса libredwg-web</summary>
+<label for="esm">Модуль</label><input id="esm" type="text" value="https://esm.sh/@mlightcad/libredwg-web">
+<label for="wasm">Папка wasm</label><input id="wasm" type="text" value="https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web/wasm/"></details>
+<button id="go" class="go">Конвертировать</button>
+<div class="bar"><i id="pb"></i></div><div id="st">Ожидание</div><div id="log"></div>
+</div>
+<script type="module">
+const $=id=>document.getElementById(id);
+let src=null,dst=null,lib=null,FT=null;
+const log=(m,c)=>{const d=document.createElement("div");d.textContent=m;if(c)d.className=c;$("log").appendChild(d);$("log").scrollTop=1e9};
+if(!window.showDirectoryPicker){$("st").textContent="Нужен Chrome или Edge: браузер не поддерживает выбор папок.";$("go").disabled=$("bs").disabled=$("bd").disabled=true}
+$("bs").onclick=async()=>{try{src=await showDirectoryPicker({mode:"readwrite"});$("srcn").textContent=src.name}catch{}};
+$("bd").onclick=async()=>{try{dst=await showDirectoryPicker({mode:"readwrite"});$("dstn").textContent=dst.name}catch{}};
+
+async function loadLib(){
+  if(lib)return;
+  const V="@mlightcad/libredwg-web",J="https://cdn.jsdelivr.net/npm/"+V;
+  const esms=[...new Set([$("esm").value.trim(),"https://esm.sh/"+V,J+"/+esm",J+"/dist/libredwg-web.js",J+"/dist/index.js"].filter(Boolean))];
+  const wasms=[...new Set([$("wasm").value.trim(),"https://unpkg.com/"+V+"/wasm/"].filter(Boolean))];
+  for(const u of esms){
+    let m;
+    try{m=await import(u)}catch(e){log("import "+u+": "+(e.message||e),"er");continue}
+    if(!m.LibreDwg){log("import "+u+": нет LibreDwg (экспорты: "+Object.keys(m).join(", ")+")","er");continue}
+    for(const w of wasms){
+      try{lib=await m.LibreDwg.create(w);FT=m.Dwg_File_Type;log("libredwg загружен: "+u,"ok");return}
+      catch(e){log("create("+w+"): "+(e.message||e),"er")}
+    }
+  }
+  throw new Error("не удалось загрузить libredwg-web, см. строки выше");
+}
+async function collect(dir,path,rec,skipPdf){
+  const out=[];
+  for await(const [n,h] of dir.entries()){
+    if(h.kind==="file"&&/\.dwg$/i.test(n))out.push({h,path,n});
+    else if(h.kind==="directory"&&rec&&!(skipPdf&&n==="pdf"))out.push(...await collect(h,[...path,n],rec,skipPdf));
+  }
+  return out;
+}
+const LONG={A4:297,A3:420,A2:594,A1:841,A0:1189};
+function dwgToSvg(buf){
+  const dwg=lib.dwg_read_data(buf,FT.DWG);
+  if(!dwg)throw new Error("не удалось прочитать DWG");
+  const db=lib.convert(dwg);
+  if(typeof lib.dwg_to_svg!=="function")throw new Error("в libredwg-web нет dwg_to_svg; доступно: "+Object.getOwnPropertyNames(Object.getPrototypeOf(lib)).filter(n=>/svg|dxf|json|convert/i.test(n)).join(", "));
+  const svg=lib.dwg_to_svg(db);
+  try{lib.dwg_free(dwg)}catch{}
+  return svg;
+}
+async function svgToPdf(text,size,mode,mono){
+  const svg=new DOMParser().parseFromString(text,"image/svg+xml").documentElement;
+  if(svg.nodeName.toLowerCase()!=="svg")throw new Error("пустой или неверный SVG");
+  let vb=(svg.getAttribute("viewBox")||"").trim().split(/[\s,]+/).map(Number),vw,vh;
+  if(vb.length===4&&vb[2]>0&&vb[3]>0){vw=vb[2];vh=vb[3]}
+  else{vw=parseFloat(svg.getAttribute("width"))||297;vh=parseFloat(svg.getAttribute("height"))||210;svg.setAttribute("viewBox",`0 0 ${vw} ${vh}`)}
+  if(mono){const st=document.createElementNS("http://www.w3.org/2000/svg","style");
+    st.textContent="[stroke]:not([stroke=none]){stroke:#000!important}[fill]:not([fill=none]){fill:#000!important}text{fill:#000!important}";svg.prepend(st)}
+  const k=LONG[size]/Math.max(vw,vh),w=vw*k,h=vh*k;
+  const pdf=new window.jspdf.jsPDF({unit:"mm",format:[w,h],orientation:w>h?"l":"p"});
+  if(mode==="vector"){
+    const el=document.importNode(svg,true),box=document.createElement("div");
+    box.style.cssText="position:absolute;left:-99999px;top:0";box.appendChild(el);document.body.appendChild(box);
+    try{const o={x:0,y:0,width:w,height:h};
+      if(pdf.svg)await pdf.svg(el,o);else await window.svg2pdf.svg2pdf(el,pdf,o)}
+    finally{box.remove()}
+  }else{
+    const L=4000,cw=Math.round(vw>=vh?L:L*vw/vh),ch=Math.round(vw>=vh?L*vh/vw:L);
+    svg.setAttribute("width",cw);svg.setAttribute("height",ch);
+    const url=URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(svg)],{type:"image/svg+xml"}));
+    const img=new Image();img.src=url;await img.decode();
+    const c=document.createElement("canvas");c.width=cw;c.height=ch;const g=c.getContext("2d");
+    g.fillStyle="#fff";g.fillRect(0,0,cw,ch);g.drawImage(img,0,0,cw,ch);URL.revokeObjectURL(url);
+    pdf.addImage(c.toDataURL("image/jpeg",0.92),"JPEG",0,0,w,h);
+  }
+  return pdf.output("blob");
+}
+async function save(root,path,name,blob){
+  let d=root;for(const p of path)d=await d.getDirectoryHandle(p,{create:true});
+  const fh=await d.getFileHandle(name.replace(/\.dwg$/i,".pdf"),{create:true});
+  const w=await fh.createWritable();await w.write(blob);await w.close();
+}
+$("go").onclick=async()=>{
+  if(!src){$("st").textContent="Сначала выберите папку с DWG";return}
+  $("go").disabled=true;$("log").innerHTML="";$("pb").style.width="0";
+  try{
+    if(!window.jspdf)throw new Error("не загрузился jsPDF (нужен интернет при первом открытии страницы)");
+    $("st").textContent="Загрузка libredwg…";await loadLib();
+    const out=dst||await src.getDirectoryHandle("pdf",{create:true});
+    const files=await collect(src,[],$("rec").checked,!dst);
+    if(!files.length){$("st").textContent="DWG-файлы не найдены";return}
+    let done=0,bad=0;
+    for(const f of files){
+      const rel=[...f.path,f.n].join("/");
+      $("st").textContent=`Готово ${done} из ${files.length}: ${f.n}`;
+      try{
+        const buf=await(await f.h.getFile()).arrayBuffer();
+        const blob=await svgToPdf(dwgToSvg(buf),$("size").value,$("mode").value,$("mono").checked);
+        await save(out,f.path,f.n,blob);log("✓ "+rel,"ok");
+      }catch(e){bad++;log(`✗ ${rel}: ${e.message||e}`,"er")}
+      $("pb").style.width=(++done/files.length*100)+"%";
+      await new Promise(r=>setTimeout(r));
+    }
+    $("st").textContent=`Готово: ${done-bad} из ${files.length}`+(bad?`, ошибок: ${bad}`:"");
+  }catch(e){log("Ошибка: "+(e.message||e),"er");$("st").textContent="Остановлено"}
+  finally{$("go").disabled=false}
+};
+</script></main></body></html>
